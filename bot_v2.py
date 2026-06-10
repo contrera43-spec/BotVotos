@@ -1,7 +1,6 @@
 import discord
 from discord.ext import commands
 from datetime import datetime
-import sqlite3
 import re
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -12,6 +11,8 @@ from datetime import timedelta
 # =========================
 # CONFIGURACION
 # =========================
+
+
 
 import os
 
@@ -44,19 +45,26 @@ patron = re.compile(
 # BASE DE DATOS
 # =========================
 
-db = sqlite3.connect("votos.db")
+import psycopg2
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+db = psycopg2.connect(
+    DATABASE_URL,
+    sslmode="require"
+)
+
 cursor = db.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS votos (
-    mensaje_id INTEGER PRIMARY KEY,
+    mensaje_id BIGINT PRIMARY KEY,
     usuario TEXT,
     fecha TEXT
 )
 """)
 
 db.commit()
-
 # =========================
 # EVENTOS
 # =========================
@@ -107,7 +115,16 @@ async def on_message(message):
 
     if resultado:
 
-        usuario = resultado.group(1).strip()
+        usuario = resultado.group(1)
+
+        usuario = usuario.casefold()
+        usuario = usuario.strip()
+
+        # quitar espacios
+        usuario = "".join(usuario.split())
+
+        # quitar símbolos raros
+        usuario = re.sub(r"[^a-z0-9]", "", usuario)
 
         print(f"VOTO DETECTADO: {usuario}")
 
@@ -128,7 +145,7 @@ async def on_message(message):
                 """,
                 (
                     message.id,
-                    usuario.casefold(),
+                    usuario,
                     message.created_at.isoformat()
                 )
             )
@@ -136,7 +153,6 @@ async def on_message(message):
             db.commit()
 
     await bot.process_commands(message)
-
 # =========================
 # COMANDOS
 # =========================
@@ -220,15 +236,15 @@ async def topvotos(ctx):
         SELECT usuario,
                COUNT(*) as votos
         FROM votos
-        WHERE strftime('%m', fecha)=?
-        AND strftime('%Y', fecha)=?
+        WHERE EXTRACT(MONTH FROM CAST(fecha AS TIMESTAMP)) = %s
+        AND EXTRACT(YEAR FROM CAST(fecha AS TIMESTAMP)) = %s
         GROUP BY usuario
         ORDER BY votos DESC
         LIMIT 10
         """,
         (
-            f"{ahora.month:02}",
-            str(ahora.year)
+            ahora.month,
+            ahora.year
         )
     )
 
@@ -256,7 +272,7 @@ async def topvotos(ctx):
         else:
             texto += f"{i+1}. {nombre} - {votos} votos\n"
 
-    await ctx.send(texto)
+    await ctx.send(texto)@bot.command()
 @bot.command()
 async def topsemanal(ctx):
 
@@ -269,12 +285,12 @@ async def topsemanal(ctx):
         SELECT usuario,
                COUNT(*) as votos
         FROM votos
-        WHERE fecha >= ?
+        WHERE CAST(fecha AS TIMESTAMP) >= %s
         GROUP BY usuario
         ORDER BY votos DESC
         LIMIT 10
         """,
-        (fecha_limite.isoformat(),)
+        (fecha_limite,)
     )
 
     ranking = cursor.fetchall()
@@ -301,8 +317,7 @@ async def topsemanal(ctx):
         else:
             texto += f"{i+1}. {nombre} - {votos} votos\n"
 
-    await ctx.send(texto)
-MESES = [
+    await ctx.send(texto)MESES = [
 "ENERO", "FEBRERO", "MARZO", "ABRIL",
 "MAYO", "JUNIO", "JULIO", "AGOSTO",
 "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"
@@ -367,23 +382,22 @@ async def publicar_top_mensual():
         mes = ahora.month - 1
         año = ahora.year
 
-    cursor.execute(
-        """
-        SELECT usuario,
-               COUNT(*) as votos
-        FROM votos
-        WHERE strftime('%m', fecha)=?
-        AND strftime('%Y', fecha)=?
-        GROUP BY usuario
-        ORDER BY votos DESC
-        LIMIT 10
-        """,
-        (
-            f"{mes:02}",
-            str(año)
-        )
+cursor.execute(
+    """
+    SELECT usuario,
+           COUNT(*) as votos
+    FROM votos
+    WHERE EXTRACT(MONTH FROM CAST(fecha AS TIMESTAMP)) = %s
+    AND EXTRACT(YEAR FROM CAST(fecha AS TIMESTAMP)) = %s
+    GROUP BY usuario
+    ORDER BY votos DESC
+    LIMIT 10
+    """,
+    (
+        mes,
+        año
     )
-
+)
     ranking = cursor.fetchall()
 
     if not ranking:
